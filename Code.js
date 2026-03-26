@@ -73,12 +73,10 @@ function ingestZynatechFiles() {
 }
 
 function parseZynatechExcel(file) {
-  // Copy to temp spreadsheet to read with Sheets API
-  const tempFile = file.makeCopy('TMP_ZYN_' + Date.now());
-  const ss       = SpreadsheetApp.openById(tempFile.getId());
-  const sheet    = ss.getSheets()[0];
-  const data     = sheet.getDataRange().getValues();
-  tempFile.setTrashed(true);
+  // Open directly — file is already Google Sheets format in Drive
+  const ss    = SpreadsheetApp.openById(file.getId());
+  const sheet = ss.getSheets()[0];
+  const data  = sheet.getDataRange().getValues();
 
   // Find header row (row with 'BOL#')
   let headerRow = -1;
@@ -352,7 +350,7 @@ function runReconciliation() {
 
     if (railcarMatches.length === 0) {
       // No match found
-      exceptions.push({
+      exceptions.push(buildException({
         exception_date:   zyn.transaction_date,
         zynatech_id:      zyn.id,
         truck_number:     zyn.truck_number,
@@ -361,7 +359,7 @@ function runReconciliation() {
         rtu:              zyn.rtu,
         exception_type:   'no_sf_match',
         exception_detail: `Zynatech BOL ticket ${zyn.truck_ticket} truck ${zyn.truck_number} railcar ${zyn.railcar} not found in SF Transactions`
-      });
+      }));
       return;
     }
 
@@ -444,7 +442,7 @@ function runReconciliation() {
 
     // If time gap is large, also log as exception for review
     if (timeGapFlag) {
-      exceptions.push({
+      exceptions.push(buildException({
         exception_date:   zyn.transaction_date,
         zynatech_id:      zyn.id,
         sf_transaction_id: sfMatch.id,
@@ -454,14 +452,14 @@ function runReconciliation() {
         rtu:              zyn.rtu,
         exception_type:   'time_gap_too_large',
         exception_detail: `Gap of ${Math.round(gapMinutes)} minutes between Zynatech stop and SF transaction`
-      });
+      }));
     }
   });
 
   // Find SF transaction records with no Zynatech match
   sfTransRecords.forEach(sf => {
     if (matchedSfIds.has(sf.id)) return;
-    exceptions.push({
+    exceptions.push(buildException({
       exception_date:   sf.transaction_datetime_utc
         ? sf.transaction_datetime_utc.split('T')[0] : null,
       sf_transaction_id: sf.id,
@@ -470,7 +468,7 @@ function runReconciliation() {
       railcar:          sf.destination_railcar,
       exception_type:   'no_zyn_match',
       exception_detail: `SF Transaction ticket ${sf.original_ticket} truck ${sf.truck_number} not found in Zynatech`
-    });
+    }));
   });
 
   // Batch insert results
@@ -660,6 +658,23 @@ function lookupWellName(rawName) {
   return _wellNameCache[rawName.toUpperCase()] || rawName;
 }
 
+// Normalize all exception records to same shape so batch insert works
+function buildException(fields) {
+  return {
+    exception_date:    fields.exception_date    || null,
+    zynatech_id:       fields.zynatech_id       || null,
+    sf_transaction_id: fields.sf_transaction_id || null,
+    sf_truck_id:       fields.sf_truck_id       || null,
+    truck_number:      fields.truck_number      || null,
+    truck_ticket:      fields.truck_ticket      || null,
+    railcar:           fields.railcar           || null,
+    rtu:               fields.rtu               || null,
+    exception_type:    fields.exception_type    || null,
+    exception_detail:  fields.exception_detail  || null,
+    resolved:          false
+  };
+}
+
 // ============================================================
 // SEED FUNCTIONS — run once to populate reference tables
 // ============================================================
@@ -667,18 +682,32 @@ function lookupWellName(rawName) {
 // Run once to seed RTU config table
 function seedRTUConfig() {
   const rtus = [
+    { rtu_id: 'S-1195', display_name: 'Transloader S-1195', timezone_offset: 2 },
+    { rtu_id: 'S-1196', display_name: 'Transloader S-1196', timezone_offset: 2 },
+    { rtu_id: 'S-1626', display_name: 'Transloader S-1626', timezone_offset: 2 },
     { rtu_id: 'S-1627', display_name: 'Transloader S-1627', timezone_offset: 2 },
+    { rtu_id: 'S-1701', display_name: 'Transloader S-1701', timezone_offset: 2 },
     { rtu_id: 'S-1730', display_name: 'Transloader S-1730', timezone_offset: 2 },
-    // Add additional RTUs here
   ];
 
   rtus.forEach(rtu => upsertRecord('rtu_config', rtu, ['rtu_id']));
   Logger.log('RTU config seeded');
 }
 
-// Run once to seed well name map from your TypoMap
-// Pass in array of {typo, correct} objects
-function seedWellNameMap(typoData) {
+// Run once to seed well name map — delete after running
+// Populate typoData from your internal TypoMap before running
+// DO NOT commit real well names to public repos
+function seedWellNameMap() {
+  const typoData = [
+    // Add entries here in format: { typo: 'INCORRECT', correct: 'CORRECT' }
+    // Clear this array before committing to version control
+  ];
+
+  if (typoData.length === 0) {
+    Logger.log('No typo data provided — populate typoData array before running');
+    return;
+  }
+
   typoData.forEach(row => {
     upsertRecord('well_name_map', {
       typo:    row.typo.toUpperCase().trim(),
